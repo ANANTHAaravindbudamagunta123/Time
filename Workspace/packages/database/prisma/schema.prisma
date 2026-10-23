@@ -1,0 +1,572 @@
+// WorkSphere — Complete Prisma Schema
+// Multi-tenant SaaS with PostgreSQL RLS for org isolation
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  HR
+  DEPT_HEAD
+  MANAGER
+  EMPLOYEE
+}
+
+enum OrgPlan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  URGENT
+  HIGH
+  MEDIUM
+  LOW
+  NO_PRIORITY
+}
+
+enum TimerState {
+  IDLE
+  RUNNING
+  PAUSED
+  STOPPED
+}
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_UPDATED
+  DEADLINE_CHANGED
+  DEADLINE_APPROACHING
+  TIMESHEET_SUBMITTED
+  TIMESHEET_APPROVED
+  TIMESHEET_REJECTED
+  INVITATION_SENT
+  MEETING_INVITED
+  MEETING_REMINDER
+  MENTION
+  COMMENT_ADDED
+}
+
+enum AttendeeStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  TENTATIVE
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  INVITE_SENT
+  INVITE_ACCEPTED
+  ROLE_CHANGED
+  TIMER_STARTED
+  TIMER_PAUSED
+  TIMER_STOPPED
+  TIMESHEET_SUBMITTED
+  TIMESHEET_APPROVED
+  TIMESHEET_REJECTED
+}
+
+enum CalendarProvider {
+  GOOGLE
+  MICROSOFT
+}
+
+enum ProjectMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+// ─── Organization (Tenant Root) ───────────────────────────────────────────────
+
+model Organization {
+  id                  String   @id @default(uuid())
+  name                String
+  slug                String   @unique
+  plan                OrgPlan  @default(FREE)
+  logoUrl             String?
+  website             String?
+  timezone            String   @default("UTC")
+  workingHoursStart   String   @default("09:00")
+  workingHoursEnd     String   @default("18:00")
+  maxSeats            Int      @default(10)
+  settings            Json     @default("{}")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  users               User[]
+  departments         Department[]
+  projects            Project[]
+  invitations         Invitation[]
+  meetings            Meeting[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  timesheets          Timesheet[]
+  calendarIntegrations CalendarIntegration[]
+
+  @@index([slug])
+  @@map("organizations")
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  name            String
+  passwordHash    String?
+  hashedRt        String?   // Argon2 hash of current refresh token
+  avatarUrl       String?
+  role            UserRole  @default(EMPLOYEE)
+  orgId           String
+  departmentId    String?
+  jobTitle        String?
+  phone           String?
+  bio             String?
+  timezone        String?
+  isOnboarded     Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  lastActiveAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  organization          Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  department            Department?           @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  managedDepartments    Department[]          @relation("DepartmentHead")
+  projectMemberships    ProjectMember[]
+  ownedProjects         Project[]             @relation("ProjectOwner")
+  assignedTasks         Task[]                @relation("TaskAssignee")
+  reportedTasks         Task[]                @relation("TaskReporter")
+  taskComments          TaskComment[]
+  taskAttachments       TaskAttachment[]
+  timerSessions         TimerSession[]
+  timeEntries           TimeEntry[]
+  timesheets            Timesheet[]           @relation("TimesheetUser")
+  reviewedTimesheets    Timesheet[]           @relation("TimesheetReviewer")
+  approvedTimeEntries   TimeEntry[]           @relation("TimeEntryApprover")
+  organizedMeetings     Meeting[]             @relation("MeetingOrganizer")
+  meetingAttendances    MeetingAttendee[]
+  notifications         Notification[]
+  sentInvitations       Invitation[]          @relation("InvitationSender")
+  calendarIntegrations  CalendarIntegration[]
+  auditActorLogs        AuditLog[]            @relation("AuditActor")
+
+  @@index([orgId])
+  @@index([email])
+  @@index([orgId, role])
+  @@index([departmentId])
+  @@map("users")
+}
+
+// ─── Department ───────────────────────────────────────────────────────────────
+
+model Department {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  orgId       String
+  headId      String?
+  parentId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  head          User?        @relation("DepartmentHead", fields: [headId], references: [id])
+  members       User[]       @relation("DepartmentMembers")
+  parent        Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id])
+  children      Department[] @relation("DepartmentHierarchy")
+
+  @@unique([name, orgId])
+  @@index([orgId])
+  @@map("departments")
+}
+
+// ─── Invitation ───────────────────────────────────────────────────────────────
+
+model Invitation {
+  id           String    @id @default(uuid())
+  email        String
+  orgId        String
+  role         UserRole  @default(EMPLOYEE)
+  token        String    @unique
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  invitedById  String
+  departmentId String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation("InvitationSender", fields: [invitedById], references: [id])
+
+  @@index([orgId])
+  @@index([email, orgId])
+  @@index([token])
+  @@map("invitations")
+}
+
+// ─── Project ──────────────────────────────────────────────────────────────────
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  orgId       String
+  ownerId     String
+  status      ProjectStatus @default(ACTIVE)
+  color       String        @default("#6366F1")
+  icon        String?
+  startDate   DateTime?
+  dueDate     DateTime?
+  isPrivate   Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  organization Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner        User            @relation("ProjectOwner", fields: [ownerId], references: [id])
+  members      ProjectMember[]
+  tasks        Task[]
+  timeEntries  TimeEntry[]
+
+  @@index([orgId])
+  @@index([ownerId])
+  @@index([orgId, status])
+  @@map("projects")
+}
+
+model ProjectMember {
+  userId    String
+  projectId String
+  role      ProjectMemberRole @default(MEMBER)
+  joinedAt  DateTime          @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([userId, projectId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+// ─── Task ─────────────────────────────────────────────────────────────────────
+
+model Task {
+  id             String       @id @default(uuid())
+  title          String
+  description    String?
+  projectId      String
+  assigneeId     String?
+  reporterId     String
+  parentId       String?
+  status         TaskStatus   @default(TODO)
+  priority       TaskPriority @default(NO_PRIORITY)
+  dueDate        DateTime?
+  startDate      DateTime?
+  estimatedHours Float?
+  labels         String[]     @default([])
+  order          Float        @default(0)
+  completedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee    User?            @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  reporter    User             @relation("TaskReporter", fields: [reporterId], references: [id])
+  parent      Task?            @relation("SubTasks", fields: [parentId], references: [id])
+  subTasks    Task[]           @relation("SubTasks")
+  comments    TaskComment[]
+  attachments TaskAttachment[]
+  timerSessions TimerSession[]
+  timeEntries   TimeEntry[]
+
+  @@index([projectId])
+  @@index([assigneeId])
+  @@index([projectId, status])
+  @@index([dueDate])
+  @@map("tasks")
+}
+
+model TaskComment {
+  id        String    @id @default(uuid())
+  taskId    String
+  authorId  String
+  content   String
+  editedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([taskId])
+  @@map("task_comments")
+}
+
+model TaskAttachment {
+  id           String   @id @default(uuid())
+  taskId       String
+  uploadedById String
+  fileName     String
+  fileSize     Int
+  mimeType     String
+  url          String
+  createdAt    DateTime @default(now())
+
+  task       Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([taskId])
+  @@map("task_attachments")
+}
+
+// ─── Time Tracking ────────────────────────────────────────────────────────────
+
+model TimerSession {
+  id             String     @id @default(uuid())
+  userId         String
+  taskId         String?
+  state          TimerState @default(RUNNING)
+  startedAt      DateTime   @default(now())
+  pausedAt       DateTime?
+  stoppedAt      DateTime?
+  totalPausedMs  Int        @default(0)
+  notes          String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task       Task?      @relation(fields: [taskId], references: [id])
+  timeEntry  TimeEntry?
+
+  @@index([userId])
+  @@index([taskId])
+  @@index([userId, state])
+  @@map("timer_sessions")
+}
+
+model TimeEntry {
+  id              String   @id @default(uuid())
+  userId          String
+  taskId          String?
+  projectId       String?
+  timerSessionId  String?  @unique
+  startTime       DateTime
+  endTime         DateTime
+  durationMs      Int
+  notes           String?
+  isBillable      Boolean  @default(true)
+  isApproved      Boolean  @default(false)
+  approvedById    String?
+  approvedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task          Task?         @relation(fields: [taskId], references: [id])
+  project       Project?      @relation(fields: [projectId], references: [id])
+  timerSession  TimerSession? @relation(fields: [timerSessionId], references: [id])
+  approvedBy    User?         @relation("TimeEntryApprover", fields: [approvedById], references: [id])
+  timesheetEntries TimesheetEntry[]
+
+  @@index([userId])
+  @@index([taskId])
+  @@index([projectId])
+  @@index([userId, startTime])
+  @@map("time_entries")
+}
+
+// ─── Timesheet ────────────────────────────────────────────────────────────────
+
+model Timesheet {
+  id               String          @id @default(uuid())
+  userId           String
+  orgId            String
+  weekStart        DateTime
+  weekEnd          DateTime
+  status           TimesheetStatus @default(DRAFT)
+  submittedAt      DateTime?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  rejectionReason  String?
+  totalHours       Float           @default(0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  user       User             @relation("TimesheetUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer   User?            @relation("TimesheetReviewer", fields: [reviewedById], references: [id])
+  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  entries    TimesheetEntry[]
+
+  @@unique([userId, weekStart])
+  @@index([orgId])
+  @@index([userId])
+  @@index([orgId, status])
+  @@map("timesheets")
+}
+
+model TimesheetEntry {
+  id           String @id @default(uuid())
+  timesheetId  String
+  timeEntryId  String
+
+  timesheet  Timesheet @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+  timeEntry  TimeEntry @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
+
+  @@unique([timesheetId, timeEntryId])
+  @@map("timesheet_entries")
+}
+
+// ─── Meeting ──────────────────────────────────────────────────────────────────
+
+model Meeting {
+  id               String           @id @default(uuid())
+  title            String
+  description      String?
+  orgId            String
+  organizerId      String
+  startTime        DateTime
+  endTime          DateTime
+  location         String?
+  meetingUrl       String?
+  notes            String?
+  isRecurring      Boolean          @default(false)
+  recurringRule    String?
+  calendarEventId  String?
+  calendarProvider CalendarProvider?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  organizer    User              @relation("MeetingOrganizer", fields: [organizerId], references: [id])
+  attendees    MeetingAttendee[]
+
+  @@index([orgId])
+  @@index([organizerId])
+  @@index([orgId, startTime])
+  @@map("meetings")
+}
+
+model MeetingAttendee {
+  meetingId String
+  userId    String
+  status    AttendeeStatus @default(PENDING)
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([meetingId, userId])
+  @@index([userId])
+  @@map("meeting_attendees")
+}
+
+// ─── Notification ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  orgId     String
+  actorId   String?
+  type      NotificationType
+  title     String
+  body      String
+  data      Json             @default("{}")
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  orgId       String
+  actorId     String
+  action      AuditAction
+  targetType  String
+  targetId    String?
+  changes     Json?
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor        User         @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([orgId])
+  @@index([actorId])
+  @@index([orgId, action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── Calendar Integration ─────────────────────────────────────────────────────
+
+model CalendarIntegration {
+  id              String           @id @default(uuid())
+  userId          String
+  orgId           String
+  provider        CalendarProvider
+  accessToken     String
+  refreshToken    String
+  tokenExpiresAt  DateTime
+  calendarId      String
+  isActive        Boolean          @default(true)
+  lastSyncedAt    DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([orgId])
+  @@map("calendar_integrations")
+}

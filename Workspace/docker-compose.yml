@@ -1,0 +1,85 @@
+version: '3.9'
+
+services:
+  # ─── PostgreSQL 15 ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: worksphere_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: worksphere
+      POSTGRES_PASSWORD: worksphere_password
+      POSTGRES_DB: worksphere_db
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worksphere -d worksphere_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - worksphere_network
+
+  # ─── Redis 7 ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: worksphere_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ""
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - worksphere_network
+
+  # ─── RedisInsight (optional GUI) ────────────────────────────────────────────
+  redis-insight:
+    image: redislabs/redisinsight:latest
+    container_name: worksphere_redis_insight
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+    networks:
+      - worksphere_network
+    profiles:
+      - tools
+
+  # ─── pgAdmin (optional GUI) ─────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: worksphere_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@worksphere.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - worksphere_network
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  worksphere_network:
+    driver: bridge

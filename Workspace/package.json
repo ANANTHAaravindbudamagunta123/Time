@@ -1,0 +1,37 @@
+{
+  "name": "worksphere",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "db:generate": "turbo run db:generate",
+    "db:migrate": "turbo run db:migrate",
+    "db:push": "turbo run db:push",
+    "db:studio": "cd packages/database && npx prisma studio",
+    "db:seed": "cd packages/database && npx ts-node prisma/seed.ts",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "prettier": "^3.3.3",
+    "prettier-plugin-tailwindcss": "^0.6.8",
+    "husky": "^9.1.6",
+    "lint-staged": "^15.2.10",
+    "typescript": "^5.6.3"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": ["prettier --write", "eslint --fix"],
+    "*.{json,md,yaml,yml}": ["prettier --write"]
+  }
+}
